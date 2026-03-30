@@ -31,7 +31,40 @@ while True:
     image_transposed = np.transpose(image_norm, (2, 0, 1)) 
     input_tensor = np.expand_dims(image_transposed, axis=0).astype(np.float32)
 
+    input_name = session.get_inputs()[0].name #nom de l'input du model
+    outputs = session.run(None, {input_name: input_tensor}) #exécution du model
 
+    conf_scores = outputs[0][0, :, 1] 
+    candidate_boxes = outputs[1][0, :, :]
+
+    idxs = np.where(conf_scores > 0.7)[0] #seuillage des scores de confiance
+
+    final_boxes = []
+    final_scores = []
+
+    for idx in idxs:
+        x1, y1, x2, y2 = candidate_boxes[idx] #coordonnées de la box
+
+        #coordonnées de la box en pixels 
+        left = int(x1 * 320)
+        top = int(y1 * 240)
+        right = int(x2 * 320)
+        bottom = int(y2 * 240)
+
+        final_boxes.append([left, top, right - left, bottom - top]) # Format [x, y, w, h]
+        final_scores.append(float(conf_scores[idx]))
+
+    indices = cv2.dnn.NMSBoxes(final_boxes, final_scores, 0.7, 0.3) 
+    
+    if len(indices) > 0:
+        for i in indices.flatten():
+            x, y, w, h = final_boxes[i]
+            # Dessiner le rectangle sur l'image 'frame' (320x240)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            # Ajouter le score au dessus du carré
+            text = f"{final_scores[i]:.2f}"
+            cv2.putText(frame, text, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    
     cv2.imshow("Webcam", frame) #affichage de la webcam
 
     if cv2.waitKey(1) & 0xFF == 27: #si on appuie sur la touche "echap"
