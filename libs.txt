@@ -1,1 +1,21 @@
-pip install opencv-python onnxruntime numpy Pillow 
+# Setup PatOpenCV sur un nouveau poste
+# ======================================
+
+# 1. Créer et activer l'environnement virtuel
+python3 -m venv venv
+source venv/bin/activate          # macOS / Linux
+# venv\Scripts\activate           # Windows
+
+# 2. Installer les dépendances Python
+pip install opencv-contrib-python onnxruntime numpy Pillow
+
+# 3. Télécharger le modèle de détection de visages UltraFace (ONNX)
+curl -L -o ultra_light_320.onnx \
+  "https://github.com/Linzaer/Ultra-Light-Fast-Generic-Face-Detector-1MB/raw/master/models/onnx/version-RFB-320.onnx"
+
+# 4. Télécharger le modèle de landmarks faciaux LBF (pour la rotation du GIF)
+curl -L -o lbfmodel.yaml \
+  "https://raw.githubusercontent.com/kurnianggoro/GSOC2017/master/data/lbfmodel.yaml"
+
+# 5. Lancer le script
+python3 app.py

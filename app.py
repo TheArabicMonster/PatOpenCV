@@ -28,6 +28,12 @@ def load_gif(path, target_size):
         pass
     return frames
 
+def rotate_frame(img, angle):
+    h, w = img.shape[:2]
+    M = cv2.getRotationMatrix2D((w // 2, h // 2), -angle, 1.0)
+    return cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
+
 def overlay_transparent(background, overlay, x, y):
     h_ov, w_ov = overlay.shape[:2]
     h_bg, w_bg = background.shape[:2]
@@ -65,6 +71,9 @@ cap = cv2.VideoCapture(0) #capture de la webcam
 opts = ort.SessionOptions() #objet de config de la bibliotheque onnxruntime
 opts.intra_op_num_threads = 4 #nombre max de tthreads
 opts.log_severity_level = 3 #supprime les warnings ONNX (0=verbose, 1=info, 2=warning, 3=error)
+
+facemark = cv2.face.createFacemarkLBF()
+facemark.loadModel("lbfmodel.yaml")
 
 session = ort.InferenceSession(
     "ultra_light_320.onnx", #chemin versle model
@@ -125,15 +134,32 @@ while True:
     #        cv2.putText(frame, text, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
     
     if len(indices) > 0 and gif_total_frames > 0:
-        for i in indices.flatten():
+        # Détection des landmarks sur toutes les faces détectées
+        rects = np.array([[final_boxes[i]] for i in indices.flatten()])
+        ok, all_landmarks = facemark.fit(frame, rects)
+
+        for idx, i in enumerate(indices.flatten()):
             x, y, w, h = final_boxes[i]
             gif_frame_counter = (gif_frame_counter + 1) % gif_total_frames
             current_gif_frame = gif_frames[gif_frame_counter]
-            
+
+            # Calcul de l'angle depuis les yeux (landmarks 36-41 = oeil gauche, 42-47 = oeil droit)
+            face_angle = 0.0
+            if ok and idx < len(all_landmarks):
+                pts = all_landmarks[idx][0]  # (68, 2)
+                left_eye  = pts[36:42].mean(axis=0)
+                right_eye = pts[42:48].mean(axis=0)
+                face_angle = np.degrees(np.arctan2(
+                    right_eye[1] - left_eye[1],
+                    right_eye[0] - left_eye[0]
+                ))
+
+            rotated_gif = rotate_frame(current_gif_frame, face_angle)
+
             overlay_x = x + GIF_OFFSET[0]
             overlay_y = y + GIF_OFFSET[1]
 
-            frame = overlay_transparent(frame, current_gif_frame, overlay_x, overlay_y)
+            frame = overlay_transparent(frame, rotated_gif, overlay_x, overlay_y)
 
     cv2.imshow("Webcam", frame) #affichage de la webcam
 
