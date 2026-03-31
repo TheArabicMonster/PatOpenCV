@@ -7,7 +7,7 @@ source venv/bin/activate          # macOS / Linux
 # venv\Scripts\activate           # Windows
 
 # 2. Installer les dépendances Python
-pip install opencv-contrib-python onnxruntime numpy Pillow
+pip install opencv-contrib-python onnxruntime numpy Pillow tinker
 
 # 3. Télécharger le modèle de détection de visages UltraFace (ONNX)
 curl -L -o ultra_light_320.onnx \
