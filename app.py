@@ -1,11 +1,44 @@
 import cv2
 import numpy as np
-import onnxruntime as ort 
+import onnxruntime as ort
+import argparse
+import os
+import sys
 from PIL import Image as PILImage
 
-PATH_GIF = "patHand.gif" 
-GIF_TARGET_SIZE = (96, 100)
-GIF_OFFSET = (-50, -70)
+# ─── Chemin compatible PyInstaller (bundle) et dev ───────────────────────────
+
+def resource_path(relative_path):
+    """Retourne le chemin absolu, compatible avec PyInstaller --onefile."""
+    base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, relative_path)
+
+# ─── Constantes ──────────────────────────────────────────────────────────────
+
+PATH_GIF         = resource_path("patHand.gif")
+GIF_TARGET_SIZE  = (96, 100)
+GIF_OFFSET       = (-50, -70)
+IMAGE_TARGET_SIZE = (70, 70)
+IMAGE_OFFSET      = (-90, GIF_OFFSET[1])
+
+# ─── Fonctions utilitaires ───────────────────────────────────────────────────
+
+def load_image(path, target_size):
+    img_bgr = cv2.imread(path)
+    if img_bgr is None:
+        print(f"Error loading image: {path}")
+        return None
+    img_resized = cv2.resize(img_bgr, target_size)
+    img_bgra = cv2.cvtColor(img_resized, cv2.COLOR_BGR2BGRA)
+    img_bgra[:, :, 3] = 255
+
+    h, w = img_bgra.shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+    center = (w // 2, h // 2)
+    radius = min(h, w) // 2
+    cv2.circle(mask, center, radius, 255, -1)
+    img_bgra[:, :, 3] = mask
+    return img_bgra
 
 def load_gif(path, target_size):
     try:
@@ -17,7 +50,6 @@ def load_gif(path, target_size):
     frames = []
     try:
         while True:
-            # Chaque frame est extraite sur fond transparent (RGBA pur)
             frame_rgba = PILImage.new("RGBA", gif.size, (0, 0, 0, 0))
             frame_rgba.paste(gif.convert("RGBA"), (0, 0))
             frame_rgba = frame_rgba.resize(target_size, PILImage.Resampling.LANCZOS)
@@ -38,7 +70,6 @@ def overlay_transparent(background, overlay, x, y):
     h_ov, w_ov = overlay.shape[:2]
     h_bg, w_bg = background.shape[:2]
 
-    #vérifier que le GIF ne sort pas de l'écran (crash sinon et c pas cool)
     if x >= w_bg or y >= h_bg or x + w_ov <= 0 or y + h_ov <= 0:
         return background
 
@@ -48,123 +79,121 @@ def overlay_transparent(background, overlay, x, y):
     overlay_x1, overlay_y1 = max(0, -x), max(0, -y)
     overlay_x2, overlay_y2 = overlay_x1 + (x2 - x1), overlay_y1 + (y2 - y1)
 
-    overlay_region = overlay[overlay_y1:overlay_y2, overlay_x1:overlay_x2]
+    overlay_region    = overlay[overlay_y1:overlay_y2, overlay_x1:overlay_x2]
     background_region = background[y1:y2, x1:x2]
 
     b_ov, g_ov, r_ov, a_ov = cv2.split(overlay_region)
-    
-    alpha = a_ov / 255.0
+    alpha     = a_ov / 255.0
     inv_alpha = 1.0 - alpha
 
-    # Fusionner chaque canal
     background[y1:y2, x1:x2, 0] = (alpha * b_ov + inv_alpha * background_region[:, :, 0]).astype(np.uint8)
     background[y1:y2, x1:x2, 1] = (alpha * g_ov + inv_alpha * background_region[:, :, 1]).astype(np.uint8)
     background[y1:y2, x1:x2, 2] = (alpha * r_ov + inv_alpha * background_region[:, :, 2]).astype(np.uint8)
-
     return background
 
-gif_frames = load_gif(PATH_GIF, GIF_TARGET_SIZE) or []
-gif_total_frames = len(gif_frames)
-gif_frame_counter = 0
-cap = cv2.VideoCapture(0) #capture de la webcam
+# ─── Fonction principale (importable + CLI) ───────────────────────────────────
 
-opts = ort.SessionOptions() #objet de config de la bibliotheque onnxruntime
-opts.intra_op_num_threads = 4 #nombre max de tthreads
-opts.log_severity_level = 3 #supprime les warnings ONNX (0=verbose, 1=info, 2=warning, 3=error)
+def main(image_path=None):
+    gif_frames = load_gif(PATH_GIF, GIF_TARGET_SIZE) or []
+    gif_total_frames  = len(gif_frames)
+    gif_frame_counter = 0
 
-facemark = cv2.face.createFacemarkLBF()
-facemark.loadModel("lbfmodel.yaml")
+    cap = cv2.VideoCapture(0)
 
-session = ort.InferenceSession(
-    "ultra_light_320.onnx", #chemin versle model
-    sess_options=opts, #config de la session (nombre de threads)
-    providers=['CPUExecutionProvider'] #qui vas executer le model (CPU) (peut aussi mettre CUDA, GPU etc)
-)
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads  = 4
+    opts.log_severity_level    = 3
 
-while True:
-    ret, frame = cap.read() #capture de la webcam
-    if not ret: #si pas de frame -> break
-        break
+    facemark = cv2.face.createFacemarkLBF()
+    facemark.loadModel(resource_path("lbfmodel.yaml"))
 
-    #croper le centre l'image
-    h, w = frame.shape[:2]
-    target_w = int(h * 4 / 3) #calcul de la largeur cible pour un ratio 4:3
-    x_start = (w - target_w) // 2 #calcul de la position de départ du crop
-    x_end = x_start + target_w #calcul de la position de fin du crop
-    frame_cropped = frame[0:h, x_start:x_end] #crop de l'image
-    
-    frame = cv2.resize(frame_cropped, (320, 240))#redimensionner l'image de la cam
-    image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) #conversion de l'image en RGB
-    image_norm = (image_rgb - 127.5) / 128.0 #normalisation de l'image (valeurs des couleurs entre -1 et 1)
-    image_transposed = np.transpose(image_norm, (2, 0, 1)) 
-    input_tensor = np.expand_dims(image_transposed, axis=0).astype(np.float32)
+    session = ort.InferenceSession(
+        resource_path("ultra_light_320.onnx"),
+        sess_options=opts,
+    )
 
-    input_name = session.get_inputs()[0].name #nom de l'input du model
-    outputs = session.run(None, {input_name: input_tensor}) #exécution du model
+    static_image = None
+    if image_path:
+        static_image = load_image(image_path, IMAGE_TARGET_SIZE)
+        if static_image is None:
+            print(f"Warning: Could not load static image '{image_path}'")
 
-    conf_scores = outputs[0][0, :, 1] 
-    candidate_boxes = outputs[1][0, :, :]
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-    idxs = np.where(conf_scores > 0.7)[0] #seuillage des scores de confiance
+        h, w = frame.shape[:2]
+        target_w  = int(h * 4 / 3)
+        x_start   = (w - target_w) // 2
+        frame_cropped = frame[0:h, x_start:x_start + target_w]
+        frame = cv2.resize(frame_cropped, (320, 240))
 
-    final_boxes = []
-    final_scores = []
+        image_rgb        = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image_norm       = (image_rgb - 127.5) / 128.0
+        image_transposed = np.transpose(image_norm, (2, 0, 1))
+        input_tensor     = np.expand_dims(image_transposed, axis=0).astype(np.float32)
 
-    for idx in idxs:
-        x1, y1, x2, y2 = candidate_boxes[idx] #coordonnées de la box
+        input_name  = session.get_inputs()[0].name
+        outputs     = session.run(None, {input_name: input_tensor})
 
-        #coordonnées de la box en pixels 
-        left = int(x1 * 320)
-        top = int(y1 * 240)
-        right = int(x2 * 320)
-        bottom = int(y2 * 240)
+        conf_scores     = outputs[0][0, :, 1]
+        candidate_boxes = outputs[1][0, :, :]
 
-        final_boxes.append([left, top, right - left, bottom - top]) # Format [x, y, w, h]
-        final_scores.append(float(conf_scores[idx]))
+        idxs         = np.where(conf_scores > 0.7)[0]
+        final_boxes  = []
+        final_scores = []
 
-    indices = cv2.dnn.NMSBoxes(final_boxes, final_scores, 0.7, 0.3) 
-    
-    #if len(indices) > 0:
-    #    for i in indices.flatten():
-    #        x, y, w, h = final_boxes[i]
-    #        # Dessiner le rectangle sur l'image 'frame' (320x240)
-    #        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-    #        # Ajouter le score au dessus du carré
-    #        text = f"{final_scores[i]:.2f}"
-    #        cv2.putText(frame, text, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    
-    if len(indices) > 0 and gif_total_frames > 0:
-        # Détection des landmarks sur toutes les faces détectées
-        rects = np.array([[final_boxes[i]] for i in indices.flatten()])
-        ok, all_landmarks = facemark.fit(frame, rects)
+        for idx in idxs:
+            x1, y1, x2, y2 = candidate_boxes[idx]
+            left   = int(x1 * 320)
+            top    = int(y1 * 240)
+            right  = int(x2 * 320)
+            bottom = int(y2 * 240)
+            final_boxes.append([left, top, right - left, bottom - top])
+            final_scores.append(float(conf_scores[idx]))
 
-        for idx, i in enumerate(indices.flatten()):
-            x, y, w, h = final_boxes[i]
-            gif_frame_counter = (gif_frame_counter + 1) % gif_total_frames
-            current_gif_frame = gif_frames[gif_frame_counter]
+        indices = cv2.dnn.NMSBoxes(final_boxes, final_scores, 0.7, 0.3)
 
-            # Calcul de l'angle depuis les yeux (landmarks 36-41 = oeil gauche, 42-47 = oeil droit)
-            face_angle = 0.0
-            if ok and idx < len(all_landmarks):
-                pts = all_landmarks[idx][0]  # (68, 2)
-                left_eye  = pts[36:42].mean(axis=0)
-                right_eye = pts[42:48].mean(axis=0)
-                face_angle = np.degrees(np.arctan2(
-                    right_eye[1] - left_eye[1],
-                    right_eye[0] - left_eye[0]
-                ))
+        if len(indices) > 0 and gif_total_frames > 0:
+            rects = np.array([[final_boxes[i]] for i in indices.flatten()])
+            ok, all_landmarks = facemark.fit(frame, rects)
 
-            rotated_gif = rotate_frame(current_gif_frame, face_angle)
+            for idx, i in enumerate(indices.flatten()):
+                x, y, w_box, h_box = final_boxes[i]
+                gif_frame_counter = (gif_frame_counter + 1) % gif_total_frames
+                current_gif_frame = gif_frames[gif_frame_counter]
 
-            overlay_x = x + GIF_OFFSET[0]
-            overlay_y = y + GIF_OFFSET[1]
+                face_angle = 0.0
+                if ok and idx < len(all_landmarks):
+                    pts       = all_landmarks[idx][0]
+                    left_eye  = pts[36:42].mean(axis=0)
+                    right_eye = pts[42:48].mean(axis=0)
+                    face_angle = np.degrees(np.arctan2(
+                        right_eye[1] - left_eye[1],
+                        right_eye[0] - left_eye[0]
+                    ))
 
-            frame = overlay_transparent(frame, rotated_gif, overlay_x, overlay_y)
+                rotated_gif = rotate_frame(current_gif_frame, face_angle)
+                frame = overlay_transparent(frame, rotated_gif,
+                                            x + GIF_OFFSET[0], y + GIF_OFFSET[1])
 
-    cv2.imshow("Webcam", frame) #affichage de la webcam
+                if static_image is not None:
+                    rotated_image = rotate_frame(static_image, face_angle)
+                    frame = overlay_transparent(frame, rotated_image,
+                                               x + IMAGE_OFFSET[0], y + IMAGE_OFFSET[1])
 
-    if cv2.waitKey(1) & 0xFF == 27: #si on appuie sur la touche "echap"
-        break
+        cv2.imshow("Webcam", frame)
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
 
-cap.release() #libération de la webcam
-cv2.destroyAllWindows() #fermeture de toutes les fenêtres
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Face detection with optional image overlay")
+    parser.add_argument('--image', '-i', type=str, default=None,
+                        help="Chemin vers l'image statique à superposer")
+    args = parser.parse_args()
+    main(image_path=args.image)
